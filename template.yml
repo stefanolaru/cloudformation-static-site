@@ -1,0 +1,165 @@
+Description: Deploy a static site
+
+Parameters:
+    DomainName:
+        Description: Domain name
+        Type: String
+    HostedZoneId:
+        Description: Hosted Zone ID
+        Type: String
+
+Resources:
+    S3Bucket:
+        Type: AWS::S3::Bucket
+        DeletionPolicy: Delete
+        Properties:
+            AccessControl: PublicRead
+            BucketName: !Sub "${AWS::StackName}"
+            WebsiteConfiguration:
+                ErrorDocument: "404.html"
+                IndexDocument: "index.html"
+
+    S3BucketPolicy:
+        Type: AWS::S3::BucketPolicy
+        Properties:
+            Bucket: !Ref S3Bucket
+            PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Effect: "Allow"
+                      Action: "s3:GetObject"
+                      Principal: "*"
+                      Resource: !Sub "${S3Bucket.Arn}/*"
+    #
+    CertificateManagerCertificate:
+        Type: AWS::CertificateManager::Certificate
+        Properties:
+            # naked domain
+            DomainName: !Ref DomainName
+            # add www to certificate
+            SubjectAlternativeNames:
+                - !Sub "www.${DomainName}"
+            ValidationMethod: DNS
+            DomainValidationOptions:
+                # DNS record for the naked domain
+                - DomainName: !Ref DomainName
+                  HostedZoneId: !Ref HostedZoneId
+                # DNS record for the www domain
+                - DomainName: !Sub "www.${DomainName}"
+                  HostedZoneId: !Ref HostedZoneId
+    #
+    CloudFrontDistribution:
+        Type: AWS::CloudFront::Distribution
+        Properties:
+            DistributionConfig:
+                Aliases:
+                    - !Ref DomainName
+                    - !Sub "www.${DomainName}"
+                CustomErrorResponses:
+                    - ErrorCachingMinTTL: 60
+                      ErrorCode: 404
+                      ResponseCode: 404
+                      ResponsePagePath: "/404.html"
+                DefaultCacheBehavior:
+                    AllowedMethods:
+                        - GET
+                        - HEAD
+                    CachedMethods:
+                        - GET
+                        - HEAD
+                    Compress: true
+                    DefaultTTL: 86400
+                    ForwardedValues:
+                        Cookies:
+                            Forward: none
+                        QueryString: true
+                    MaxTTL: 31536000
+                    SmoothStreaming: false
+                    TargetOriginId: !Sub "S3-${AWS::StackName}"
+                    ViewerProtocolPolicy: "redirect-to-https"
+                    FunctionAssociations:
+                        - EventType: viewer-request
+                          FunctionARN: !GetAtt RedirectFunction.FunctionMetadata.FunctionARN
+                DefaultRootObject: "index.html"
+                Enabled: true
+                HttpVersion: http2
+                IPV6Enabled: true
+                Origins:
+                    - CustomOriginConfig:
+                          HTTPPort: 80
+                          HTTPSPort: 443
+                          OriginKeepaliveTimeout: 5
+                          # keep http-only to avoid 504 errors after stack creation
+                          OriginProtocolPolicy: "http-only"
+                          OriginReadTimeout: 30
+                          OriginSSLProtocols:
+                              - TLSv1
+                              - TLSv1.1
+                              - TLSv1.2
+                      #Bucket website endpoint without http://
+                      DomainName: !Join
+                          - ""
+                          - - !Ref S3Bucket
+                            - ".s3-website-"
+                            - !Ref AWS::Region
+                            - ".amazonaws.com"
+                      Id: !Sub "S3-${AWS::StackName}"
+                PriceClass: PriceClass_All
+                ViewerCertificate:
+                    AcmCertificateArn: !Ref CertificateManagerCertificate
+                    MinimumProtocolVersion: TLSv1.1_2016
+                    SslSupportMethod: sni-only
+
+    RedirectFunction:
+        Type: AWS::CloudFront::Function
+        Properties:
+            AutoPublish: true
+            Name: !Sub "${AWS::StackName}-redirects"
+            # add the config, even if optional, the stack creation will thrown InternalFailure error otherwise
+            FunctionConfig:
+                Comment: !Sub "Redirect to ${DomainName}"
+                Runtime: cloudfront-js-1.0
+            FunctionCode: !Sub |
+                function handler(event) {
+                    //
+                    var request = event.request;
+                    var host = request.headers.host.value;
+
+                    if (!host.startsWith("www.")) {
+                        return {
+                            statusCode: 301,
+                            statusDescription: "Permanently moved",
+                            headers: {
+                                location: { value: "https://www." + host },
+                            },
+                        };
+                    }
+                    return request;
+                }
+
+    Route53RecordSetGroup:
+        Type: AWS::Route53::RecordSetGroup
+        Properties:
+            # keep the . suffix
+            HostedZoneName: !Sub "${DomainName}."
+            # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget.html#cfn-route53-aliastarget-hostedzoneid
+            RecordSets:
+                - Name: !Ref DomainName
+                  Type: A
+                  AliasTarget:
+                      DNSName: !GetAtt CloudFrontDistribution.DomainName
+                      EvaluateTargetHealth: false
+                      HostedZoneId: Z2FDTNDATAQYW2 # leave hardcoded, don't confuse w/ !Ref HostedZoneId
+                - Name: !Sub "www.${DomainName}"
+                  Type: A
+                  AliasTarget:
+                      DNSName: !GetAtt CloudFrontDistribution.DomainName
+                      EvaluateTargetHealth: false
+                      HostedZoneId: Z2FDTNDATAQYW2 # leave hardcoded, don't confuse w/ !Ref HostedZoneId
+
+Outputs:
+    WebsiteURL:
+        Value: !GetAtt S3Bucket.WebsiteURL
+        Description: URL for website hosted on S3
+    CloudfrontDomainName:
+        Value: !GetAtt CloudFrontDistribution.DomainName

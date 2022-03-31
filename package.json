@@ -1,0 +1,13 @@
+{
+    "name": "cloudformation-static-site",
+    "version": "1.0.0",
+    "description": "Create a static site in AWS with a custom domain, SSL certificate, and proper redirects using CloudFormation.",
+    "main": "index.js",
+    "repository": "https://github.com/stefanolaru/cloudformation-static-site",
+    "scripts": {
+        "create-stack": "aws cloudformation create-stack --stack-name monithor-site --template-body file://template.yml --profile monithor --region us-east-1 --parameters ParameterKey=DomainName,ParameterValue=monithor.co  ParameterKey=HostedZoneId,ParameterValue=Z07414553OA4KK51T5EZA",
+        "deploy": "aws s3 cp --acl public-read --profile monithor --recursive --exclude \"*\" --include index.html --include 404.html ./ s3://monithor-site && aws cloudfront create-invalidation --profile monithor --distribution-id E3DTDUVF1U3F4W --paths \"/*\""
+    },
+    "author": "Stefan Olaru",
+    "license": "ISC"
+}
